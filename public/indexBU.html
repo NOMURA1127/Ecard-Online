@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>シンプルEカード</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 600px;
+      margin: 20px auto;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    h1 {
+      font-size: 1.4rem;
+      text-align: center;
+    }
+    .row {
+      margin-bottom: 8px;
+    }
+    label {
+      display: inline-block;
+      width: 90px;
+    }
+    input {
+      padding: 4px 6px;
+    }
+    button {
+      margin: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    #status {
+      margin-top: 10px;
+      padding: 6px;
+      background: #f4f4f4;
+      min-height: 2em;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      white-space: pre-line;
+    }
+    #card-buttons button {
+      font-size: 1.1rem;
+      min-width: 130px;
+    }
+    #role-display {
+      font-weight: bold;
+    }
+    .role-options label {
+      width: auto;
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>シンプルEカード（2人対戦）</h1>
+
+  <div class="row">
+    <label>名前</label>
+    <input id="name" value="プレイヤーA" />
+  </div>
+  <div class="row">
+    <label>部屋番号</label>
+    <input id="roomId" value="1234" />
+  </div>
+  <div class="row">
+    <label>パスワード</label>
+    <input id="password" value="secret" />
+  </div>
+  <div class="row role-options">
+    <label>役割</label>
+    <label><input type="radio" name="role" value="auto" checked>おまかせ</label>
+    <label><input type="radio" name="role" value="emperor">皇帝側</label>
+    <label><input type="radio" name="role" value="slave">奴隷側</label>
+  </div>
+  <div class="row">
+    <button id="joinBtn">部屋に入る</button>
+  </div>
+
+  <hr />
+
+  <div class="row">
+    あなたの役割：<span id="role-display">未参加</span>
+  </div>
+  <div class="row">
+    プレイヤー一覧：<span id="player-list">-</span>
+  </div>
+  <div class="row">
+    <strong>カードを選んで出す：</strong>
+    <div id="card-buttons"></div>
+  </div>
+
+  <div id="status"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    const joinBtn = document.getElementById("joinBtn");
+    const roomInput = document.getElementById("roomId");
+    const passInput = document.getElementById("password");
+    const nameInput = document.getElementById("name");
+    const statusDiv = document.getElementById("status");
+    const roleSpan = document.getElementById("role-display");
+    const playerListSpan = document.getElementById("player-list");
+    const cardButtonsDiv = document.getElementById("card-buttons");
+
+    let myRole = null;
+    let myDeck = null;
+    let finished = false;
+
+    function log(msg) {
+      statusDiv.textContent = msg;
+    }
+
+    function appendLog(msg) {
+      statusDiv.textContent += "\n" + msg;
+    }
+
+    joinBtn.addEventListener("click", () => {
+      const roomId = roomInput.value.trim();
+      const password = passInput.value.trim();
+      const name = nameInput.value.trim();
+      const roleChoice = document.querySelector('input[name="role"]:checked').value;
+
+      finished = false;
+      socket.emit("join_room", { roomId, password, name, roleChoice });
+    });
+
+    socket.on("joined", (data) => {
+      myRole = data.role;
+      myDeck = data.deck;
+      finished = false;
+
+      roleSpan.textContent =
+        myRole === "emperor" ? "皇帝側（👑 + 市民）" : "奴隷側（🙇 + 市民）";
+
+      updatePlayerList(data.players);
+      log(`部屋 ${data.roomId} に参加しました。あなたは ${roleSpan.textContent}`);
+
+      setupCardButtons();
+    });
+
+    socket.on("player_list", (data) => {
+      updatePlayerList(data.players);
+    });
+
+    socket.on("game_ready", () => {
+      appendLog("2人そろいました。ゲーム開始！");
+    });
+
+    socket.on("error_msg", (msg) => {
+      appendLog("エラー: " + msg);
+    });
+
+    socket.on("opponent_left", () => {
+      appendLog("相手が退出しました。");
+    });
+
+    socket.on("update_deck", (deck) => {
+      myDeck = deck;
+      updateDeckDisplay();
+    });
+
+    socket.on("round_result", ({ result, yourCard, oppCard }) => {
+      const cardLabel = (c) => {
+        if (c === "emperor") return "👑 皇帝";
+        if (c === "citizen") return "🙂 市民";
+        if (c === "slave") return "🙇 奴隷";
+        return c;
+      };
+
+      let resText = "";
+      if (result === "win") resText = "あなたの勝ち！🎉";
+      else if (result === "lose") resText = "あなたの負け…";
+      else resText = "引き分け";
+
+      appendLog(
+        `--- ラウンド結果 ---\nあなた：${cardLabel(
+          yourCard
+        )}\n相手　：${cardLabel(oppCard)}\n⇒ ${resText}`
+      );
+    });
+
+    socket.on("game_over", ({ winnerName, winnerRole }) => {
+      finished = true;
+      disableCards();
+
+      let msg = "=== ゲーム終了 ===\n";
+      if (winnerName && winnerRole) {
+        msg += `勝者: ${winnerName}（${
+          winnerRole === "emperor" ? "皇帝側" : "奴隷側"
+        }）`;
+      } else {
+        msg += "勝者情報なし";
+      }
+      appendLog(msg);
+    });
+
+    function updatePlayerList(players) {
+      if (!players || players.length === 0) {
+        playerListSpan.textContent = "-";
+        return;
+      }
+      playerListSpan.textContent = players
+        .map((p) => {
+          const roleText = p.role === "emperor" ? "皇帝側" : "奴隷側";
+          return `${p.name} (${roleText})`;
+        })
+        .join(" / ");
+    }
+
+    function setupCardButtons() {
+      cardButtonsDiv.innerHTML = "";
+      if (!myRole) return;
+
+      let buttons = [];
+      if (myRole === "emperor") {
+        buttons = [
+          { key: "emperor", label: "👑 皇帝" },
+          { key: "citizen", label: "🙂 市民" }
+        ];
+      } else {
+        buttons = [
+          { key: "slave", label: "🙇 奴隷" },
+          { key: "citizen", label: "🙂 市民" }
+        ];
+      }
+
+      buttons.forEach((b) => {
+        const btn = document.createElement("button");
+        btn.dataset.key = b.key;
+        btn.dataset.label = b.label;
+        btn.onclick = () => {
+          if (finished) return;
+          if (!myDeck || myDeck[b.key] <= 0) return;
+          socket.emit("play_card", b.key);
+          appendLog(`あなたは「${b.label}」を出しました。相手を待っています…`);
+        };
+        cardButtonsDiv.appendChild(btn);
+      });
+
+      updateDeckDisplay();
+    }
+
+    function updateDeckDisplay() {
+      if (!myDeck) return;
+      [...cardButtonsDiv.children].forEach((btn) => {
+        const key = btn.dataset.key;
+        const baseLabel = btn.dataset.label;
+        const count = myDeck[key] ?? 0;
+        btn.textContent = `${baseLabel} ×${count}`;
+        btn.disabled = finished || count <= 0;
+      });
+    }
+
+    function disableCards() {
+      [...cardButtonsDiv.children].forEach((btn) => {
+        btn.disabled = true;
+      });
+    }
+  </script>
+</body>
+</html>
